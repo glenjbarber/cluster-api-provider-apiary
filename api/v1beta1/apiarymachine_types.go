@@ -93,6 +93,7 @@ func (m *ApiaryMachine) SetConditions(conditions clusterv1.Conditions) {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=apiarymachines,scope=Namespaced,categories=cluster-api
+// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
 // +kubebuilder:printcolumn:name="Ready",type="boolean",JSONPath=".status.ready"
 // +kubebuilder:printcolumn:name="VMID",type="string",JSONPath=".status.vmID"
 // +kubebuilder:printcolumn:name="ProviderID",type="string",JSONPath=".spec.providerID"

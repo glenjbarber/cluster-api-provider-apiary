@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -177,6 +178,18 @@ func (r *ApiaryMachineReconciler) createVM(ctx context.Context, apiaryMachine *i
 		NetworkID:     networkID,
 		BaseImageName: apiaryMachine.Spec.BaseImageName,
 	})
+	if err != nil && strings.Contains(err.Error(), "already exists") {
+		// vmID is a deterministic function of this ApiaryMachine's own
+		// namespace/name (see apiaryMachineVMID), so "already exists"
+		// here can only mean a previous reconcile already created this
+		// exact VM - most likely this Reconcile call started from a
+		// stale read of Status.VMID (the controller-runtime cache
+		// hadn't yet observed an earlier successful createVM's Status
+		// write). Adopt the existing VM instead of treating this as a
+		// real failure - retrying forever on "already exists" would
+		// otherwise never self-heal on its own.
+		vm, err = apiaryCli.GetVM(ctx, vmID)
+	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("creating apiary vm: %w", err)
 	}

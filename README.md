@@ -136,7 +136,51 @@ go vet ./...
 go test ./...
 ```
 
-Live end-to-end verification (a real `kind` management cluster,
-`clusterctl init` with this provider, provisioning a real bhyve VM on
-a real Apiary node) is tracked as a follow-on step once a base image
-is staged - see the apiary repo's CLAUDE.md for status.
+### Live verification (done)
+
+Verified against a real `kind` management cluster (`clusterctl init`
+with the upstream core/kubeadm-bootstrap/kubeadm-control-plane
+providers, this provider's own manager run locally via `go run ./cmd`
+against the kind kubeconfig rather than deployed as an in-cluster
+image) and a real Apiary node (`apiarium`, via an SSH-tunneled
+`restshimd`). A real Ubuntu 24.04 cloud image was staged as a base
+image (`qemu-img convert -O raw`, uploaded via `UploadISO`), and a
+`Machine`+`ApiaryMachine` created directly (bypassing the kubeadm
+bootstrap provider - static `bootstrap.dataSecretName`, a documented,
+supported CAPI pattern - to isolate this provider's own logic from the
+bootstrap-provider chicken-and-egg problem described above).
+
+Confirmed: the NoCloud seed ISO was built, hash-verified, and
+uploaded; the VM was created with the base image attached; a real
+`bhyve` process booted continuously from the seeded disk (previously,
+before two bugs this pass found and fixed, the same VM failed
+immediately at UEFI boot with "no bootable option or device was
+found" against a blank disk). Two real bugs were found and fixed along
+the way:
+
+- A stale `managerd`/`raftd` deployment on the test node hadn't picked
+  up `base_image_name` at all (a deployment/rebuild issue on the
+  Apiary side, not a code bug in this repo, but the fix required
+  rebuilding and redeploying both binaries on both nodes of a live
+  2-node raft cluster to restore consistency).
+- `createVM`'s deterministic-id scheme raced against
+  `controller-runtime`'s cache: a `Reconcile` starting from a stale
+  read of `Status.VMID == ""` (before an earlier successful
+  `createVM`'s write had propagated to the cache) retried `CreateVM`
+  and got `"already exists"` back. Fixed by adopting the existing VM
+  (`GetVM`) instead of treating that as a real failure - see
+  `TestApiaryMachineReconciler_CreateVM_AdoptsAlreadyExistingVM`.
+
+**Not confirmed in this pass**: full cloud-init completion (network
+configuration, hostname, SSH) - the test node had no flat bridge
+(`-bhyve-bridge`) configured, a separate, pre-existing Apiary-side gap
+unrelated to this provider, so the VM had no NIC attached at all. Cloud
+images also typically redirect their console to a serial port rather
+than the VGA/EFI framebuffer this provider's noVNC-style console shows,
+so a black screen past the firmware boot stage is expected and not
+itself informative either way. Confirming full cloud-init completion
+needs either a configured bridge (for network-based confirmation, e.g.
+SSH) or wiring up bhyve's serial console (neither of which are CAPI-
+provider-specific work) - tracked as real follow-on verification, not
+attempted in this pass to avoid further live changes to shared
+infrastructure.

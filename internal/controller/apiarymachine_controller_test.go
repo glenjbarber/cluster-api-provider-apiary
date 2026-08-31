@@ -229,6 +229,69 @@ func TestApiaryMachineReconciler_CreateVM_UploadsSeedISOAndCreatesVM(t *testing.
 	}
 }
 
+// TestApiaryMachineReconciler_CreateVM_AdoptsAlreadyExistingVM covers a
+// real bug found live: vmID is deterministic from the ApiaryMachine's
+// own namespace/name, so a Reconcile that starts from a stale cached
+// read of Status.VMID == "" (the previous successful createVM's write
+// hasn't reached this reconcile's cache yet) re-attempts CreateVM and
+// gets "already exists" back from the real API. Rather than erroring
+// forever, createVM must adopt the existing VM via GetVM.
+func TestApiaryMachineReconciler_CreateVM_AdoptsAlreadyExistingVM(t *testing.T) {
+	apiaryMachine := &infrav1.ApiaryMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-machine"},
+		Spec:       infrav1.ApiaryMachineSpec{NodeID: "node-a"},
+	}
+	c := setupMachineFixtures(t, apiaryMachine)
+
+	server := newFakeApiaryServer()
+	ts := httptest.NewServer(server.handler())
+	defer ts.Close()
+
+	r := &ApiaryMachineReconciler{
+		Client: c,
+		NewApiaryClient: func(nodeID string) (*apiaryclient.Client, error) {
+			return apiaryclient.NewClient(ts.URL, "", nil), nil
+		},
+	}
+
+	// First reconcile creates the VM for real.
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "test-machine"}}); err != nil {
+		t.Fatalf("first Reconcile() error: %v", err)
+	}
+
+	// Simulate the race: reset Status.VMID back to "" in the client's
+	// cache (as if this reconcile started before the first one's Status
+	// write was observed), then reconcile again - createVM must not
+	// error out on "already exists".
+	stale := &infrav1.ApiaryMachine{}
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: "default", Name: "test-machine"}, stale); err != nil {
+		t.Fatalf("Get() error: %v", err)
+	}
+	stale.Status.VMID = ""
+	if err := c.Status().Update(t.Context(), stale); err != nil {
+		t.Fatalf("Status().Update() error: %v", err)
+	}
+
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "test-machine"}}); err != nil {
+		t.Fatalf("second Reconcile() (simulating the race) error: %v", err)
+	}
+
+	server.mu.Lock()
+	vmCount := len(server.vms)
+	server.mu.Unlock()
+	if vmCount != 1 {
+		t.Errorf("VMs on backend = %d, want exactly 1 (no duplicate created)", vmCount)
+	}
+
+	updated := &infrav1.ApiaryMachine{}
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: "default", Name: "test-machine"}, updated); err != nil {
+		t.Fatalf("Get() error: %v", err)
+	}
+	if updated.Status.VMID == "" {
+		t.Error("Status.VMID not restored after adopting the existing VM")
+	}
+}
+
 func TestApiaryMachineReconciler_PollVM_BecomesReadyOnceIPAssigned(t *testing.T) {
 	apiaryMachine := &infrav1.ApiaryMachine{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-machine"},

@@ -19,6 +19,7 @@ type ApiaryMachineTemplateSpec struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:path=apiarymachinetemplates,scope=Namespaced,categories=cluster-api
+// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
 
 // ApiaryMachineTemplate is the Schema for the apiarymachinetemplates
 // API - referenced by a KubeadmControlPlane or MachineDeployment's
