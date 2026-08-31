@@ -171,39 +171,67 @@ the way:
   (`GetVM`) instead of treating that as a real failure - see
   `TestApiaryMachineReconciler_CreateVM_AdoptsAlreadyExistingVM`.
 
-### Follow-up: real networking confirmed; NoCloud/cloud-init still an open question
+### Follow-up: fully confirmed live, end to end
 
-The gap named above (no flat bridge configured) has since been closed:
-`apiarium`'s `re0` was migrated onto a real bridge (`bridge12`,
-inheriting `re0`'s own MAC so the LAN's existing DHCP reservation for
-the host kept working), and `-bhyve-bridge bridge12` is now a live
-`managerd` flag there. Re-running the same test (this time letting the
+The gap named above (no flat bridge configured) was closed on the
+Apiary side: `apiarium`'s `re0` was migrated onto a real bridge
+(`bridge12`, inheriting `re0`'s own MAC so the LAN's existing DHCP
+reservation for the host kept working), and `-bhyve-bridge bridge12`
+is now a live `managerd` flag there. Re-running the test (letting the
 VM use the flat-bridge path, no `network_id`) confirmed **real,
-working networking end-to-end**: the guest broadcast a genuine DHCPv4
-request, got a real lease from the LAN's own router
-(`10.50.0.104`), and was pingable from an entirely separate machine
-across the bridge. This is the core thing this pass set out to prove,
-and it's now solid.
+working networking end-to-end**: a genuine DHCPv4 lease from the LAN's
+own router, pingable from an entirely separate machine across the
+bridge.
 
-**Not yet confirmed**: whether cloud-init actually consumed the
-NoCloud seed data. The booted VM's console showed the stock image's
-default hostname (`ubuntu`, not the seed's `capi-test-cp`), and SSH
-(keyed only by the seed's `ssh_authorized_keys`, nothing else could
-have added it) was never reachable - `Connection refused`, meaning
-nothing was listening on port 22 at all, not a key mismatch. A forced
-guest reset (`bhyvectl --force-reset`, to rule out a first-boot
-device-enumeration race) reproduced the same result on a second boot.
-The seed ISO is confirmed genuinely attached (`procstat -f` on the
-`bhyve` process shows the seed file open as a real block device), so
-this isn't a missing-attachment problem - it's either a NoCloud
-datasource-detection issue specific to bhyve's `ahci-cd` presentation,
-or something else preventing `sshd` from ever starting. Diagnosing it
-further needs either in-guest access (not available - no known
-credentials without the seed data having worked) or a captured serial
-console log, since cloud-init's own boot-time messages aren't visible
-on the VGA/EFI framebuffer this provider's console shows (matches the
-now-resolved suspicion that these images redirect console output
-away from that framebuffer). Wiring up bhyve's serial console (an
-Apiary-side change, not specific to this provider) is the concrete
-next step for root-causing this - tracked as real, disclosed follow-on
-work, not attempted in this pass.
+That still left one open question: whether cloud-init actually
+consumed the NoCloud seed data. The booted VM kept the stock image's
+default hostname and never opened port 22 - not a key mismatch,
+nothing was listening on port 22 at all. Diagnosing it needed to see
+what the guest actually printed during boot, which required a new
+Apiary-side feature (bhyve serial console log capture,
+[ADR-0032](../apiary/docs/adr/0032-bhyve-serial-console-log.md) in the
+apiary repo) - this base image redirects console output to serial, so
+the noVNC framebuffer console showed nothing informative either way.
+
+With the serial log actually working, the cause was visible
+immediately: cloud-init's own log showed
+
+```
+DataSourceNoCloud.py[WARNING]: device /dev/sr0 with label=cidata not a valid seed.
+```
+
+`internal/nocloud`'s `BuildSeedISO` finalized its ISO9660 filesystem
+with no Rock Ridge extensions - plain ISO9660's 8.3 naming rules
+silently mangled `user-data`/`meta-data` into `USER_DATA`/`META_DATA`
+(uppercase, hyphen stripped), which cloud-init's datasource check
+rejects outright (it requires the exact, case-sensitive, hyphenated
+names). **Fixed** by setting `RockRidge: true` in `go-diskfs`'s
+`FinalizeOptions` - confirmed via `strings`/mounting the finalized ISO
+that the real lowercase filenames are present in the raw bytes
+(macOS's own ISO9660 mounter doesn't fully honor Rock Ridge for
+display, which is why an initial local check looked like it hadn't
+worked - the bytes were correct all along).
+
+Re-running the full test with the fix confirmed everything, live:
+
+```
+$ ssh -i ~/.ssh/id_ed25519_apiary ubuntu@10.50.0.114 "hostname; cat /etc/motd; cloud-init status"
+capi-test-cp
+CLOUD_INIT_RAN_OK
+status: done
+```
+
+A real bhyve VM, seeded from a real base image, booted, took its
+NoCloud seed's custom hostname, ran a custom `runcmd`, and accepted
+SSH via a key that only the seed data could have installed. This is
+the first time this provider's full path - seed ISO build → upload →
+VM create → real network → real cloud-init completion - has been
+proven end to end.
+
+**Not yet built**: a web UI page/RPC for remote serial-log viewing
+(an operator reads the log file directly on the Apiary node for now),
+and full multi-node kubeadm cluster joining (this pass used a static
+`bootstrap.dataSecretName`, bypassing the kubeadm bootstrap provider
+entirely, specifically to isolate this provider's own infrastructure
+logic from the bootstrap-provider chicken-and-egg problem described
+above) - both real, disclosed follow-on work.

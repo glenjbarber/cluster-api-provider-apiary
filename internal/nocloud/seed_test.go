@@ -38,6 +38,30 @@ func TestBuildSeedISO_ProducesGenuineISO9660WithExpectedLabel(t *testing.T) {
 	}
 }
 
+// TestBuildSeedISO_PreservesRealLowercaseFilenames guards against a real
+// bug found live: plain ISO9660 (no Rock Ridge) mangles "user-data"/
+// "meta-data" into 8.3-uppercase "USER_DATA"/"META_DATA" with the
+// hyphen stripped - a real VM's own cloud-init log showed
+// "DataSourceNoCloud.py[WARNING]: device /dev/sr0 with label=cidata not
+// a valid seed" as a direct result, since cloud-init requires the exact
+// lowercase, hyphenated filenames. Confirms the real names appear in
+// the finalized ISO's raw bytes (Rock Ridge NM records), not just the
+// mangled ones - can't mount/list the filesystem's Rock Ridge view
+// directly from a pure byte slice, but this is what actually failed
+// live, so it's what this test guards.
+func TestBuildSeedISO_PreservesRealLowercaseFilenames(t *testing.T) {
+	data, err := BuildSeedISO("machine-3", "node-3", []byte("#cloud-config\n"))
+	if err != nil {
+		t.Fatalf("BuildSeedISO() error: %v", err)
+	}
+	if !bytes.Contains(data, []byte("user-data")) {
+		t.Error("iso does not contain the real filename \"user-data\" anywhere - Rock Ridge naming was not written, cloud-init's NoCloud datasource would reject this seed")
+	}
+	if !bytes.Contains(data, []byte("meta-data")) {
+		t.Error("iso does not contain the real filename \"meta-data\" anywhere - Rock Ridge naming was not written, cloud-init's NoCloud datasource would reject this seed")
+	}
+}
+
 func TestBuildSeedISO_EmbedsUserDataVerbatim(t *testing.T) {
 	userData := []byte("#cloud-config\nhostname: my-test-host\nssh_pwauth: false\n")
 	data, err := BuildSeedISO("machine-2", "my-test-host", userData)

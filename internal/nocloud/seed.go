@@ -75,7 +75,14 @@ func BuildSeedISO(instanceID, hostname string, userData []byte) ([]byte, error) 
 	if !ok {
 		return nil, fmt.Errorf("nocloud: filesystem is not iso9660")
 	}
-	if err := isoFS.Finalize(iso9660.FinalizeOptions{VolumeIdentifier: volumeLabel}); err != nil {
+	// RockRidge is required for cloud-init's NoCloud datasource to
+	// recognize this seed at all - without it, plain ISO9660's 8.3
+	// naming rules mangle "user-data"/"meta-data" into "USER_DATA"/
+	// "META_DATA" (uppercase, hyphen stripped), which cloud-init's own
+	// datasource check rejects outright ("not a valid seed") despite
+	// the volume label and CD001 magic both being correct - confirmed
+	// live via a real VM's own cloud-init log.
+	if err := isoFS.Finalize(iso9660.FinalizeOptions{VolumeIdentifier: volumeLabel, RockRidge: true}); err != nil {
 		return nil, fmt.Errorf("nocloud: finalizing iso: %w", err)
 	}
 
