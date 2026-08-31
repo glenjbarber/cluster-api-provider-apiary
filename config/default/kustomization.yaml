@@ -1,0 +1,6 @@
+namespace: cluster-api-provider-apiary-system
+
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager

@@ -1,0 +1,144 @@
+# Example manifest set for a single-control-plane-node Apiary workload
+# cluster - the v1 scope this provider supports today (see README.md's
+# "Known limitations" section: no load balancer / HA control plane).
+#
+# Apiary has no load balancer of its own, so ControlPlaneEndpoint below
+# is the target Apiary node's IP for the control-plane VM you're about
+# to create - you must know it (or reserve it) ahead of time, since
+# KubeadmControlPlane needs Cluster.spec.controlPlaneEndpoint set
+# before it will generate the first control-plane machine's bootstrap
+# data. If your ApiaryCluster's NetworkID doesn't use static/predictable
+# addressing, create the control-plane ApiaryMachine by hand first,
+# read its Status.Addresses once ready, then patch this Cluster's
+# controlPlaneEndpoint and apply the rest - a real, named limitation of
+# not having a provider-managed load balancer.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: example
+  namespace: default
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["192.168.0.0/16"]
+  controlPlaneEndpoint:
+    host: 10.50.0.50 # the control-plane VM's known/reserved IP - see note above
+    port: 6443
+  controlPlaneRef:
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    kind: KubeadmControlPlane
+    name: example-control-plane
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: ApiaryCluster
+    name: example
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: ApiaryCluster
+metadata:
+  name: example
+  namespace: default
+spec:
+  controlPlaneEndpoint:
+    host: 10.50.0.50
+    port: 6443
+  networkID: net-1 # an existing Apiary NetworkDefinition id - see ADR-0022
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: KubeadmControlPlane
+metadata:
+  name: example-control-plane
+  namespace: default
+spec:
+  replicas: 1 # v1 scope - see the no-load-balancer note above
+  version: v1.31.0
+  machineTemplate:
+    infrastructureRef:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+      kind: ApiaryMachineTemplate
+      name: example-control-plane
+  kubeadmConfigSpec:
+    # provider-id can't be a static value here - every VM gets a
+    # different one (apiary://<vm-id>), and a KubeadmControlPlane's
+    # config is shared across every replica. Instead, read the id this
+    # provider already embeds in the NoCloud instance metadata
+    # (meta-data's instance-id - see internal/nocloud) from cloud-init's
+    # own post-boot instance-data.json, once cloud-init has finished
+    # processing the seed ISO, and write it into kubelet's own config
+    # before kubeadm starts. See README.md's "Known limitations" section
+    # for why this manual step exists at all (no cloud-controller-
+    # manager sets it automatically).
+    preKubeadmCommands:
+      - cloud-init status --wait
+      - |
+        VM_ID=$(jq -r '.ds.meta_data."instance-id"' /run/cloud-init/instance-data.json)
+        echo "KUBELET_EXTRA_ARGS=--provider-id=apiary://${VM_ID}" > /etc/default/kubelet
+    initConfiguration:
+      nodeRegistration: {}
+    clusterConfiguration: {}
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: ApiaryMachineTemplate
+metadata:
+  name: example-control-plane
+  namespace: default
+spec:
+  template:
+    spec:
+      nodeID: apiarium # an existing Apiary cluster node_id
+      vcpus: 2
+      memoryMB: 4096
+      baseImageName: ubuntu-cloud.raw # pre-uploaded via UploadISO - see ADR-0031
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: example-workers
+  namespace: default
+spec:
+  clusterName: example
+  replicas: 2
+  selector:
+    matchLabels: {}
+  template:
+    spec:
+      clusterName: example
+      version: v1.31.0
+      bootstrap:
+        configRef:
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          kind: KubeadmConfigTemplate
+          name: example-workers
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: ApiaryMachineTemplate
+        name: example-workers
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: KubeadmConfigTemplate
+metadata:
+  name: example-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      preKubeadmCommands:
+        - cloud-init status --wait
+        - |
+          VM_ID=$(jq -r '.ds.meta_data."instance-id"' /run/cloud-init/instance-data.json)
+          echo "KUBELET_EXTRA_ARGS=--provider-id=apiary://${VM_ID}" > /etc/default/kubelet
+      joinConfiguration:
+        nodeRegistration: {}
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: ApiaryMachineTemplate
+metadata:
+  name: example-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      nodeID: freebsd-apiary
+      vcpus: 2
+      memoryMB: 2048
+      baseImageName: ubuntu-cloud.raw

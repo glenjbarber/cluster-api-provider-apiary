@@ -1,0 +1,4 @@
+resources:
+  - bases/infrastructure.cluster.x-k8s.io_apiaryclusters.yaml
+  - bases/infrastructure.cluster.x-k8s.io_apiarymachines.yaml
+  - bases/infrastructure.cluster.x-k8s.io_apiarymachinetemplates.yaml
