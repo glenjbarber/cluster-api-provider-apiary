@@ -171,16 +171,39 @@ the way:
   (`GetVM`) instead of treating that as a real failure - see
   `TestApiaryMachineReconciler_CreateVM_AdoptsAlreadyExistingVM`.
 
-**Not confirmed in this pass**: full cloud-init completion (network
-configuration, hostname, SSH) - the test node had no flat bridge
-(`-bhyve-bridge`) configured, a separate, pre-existing Apiary-side gap
-unrelated to this provider, so the VM had no NIC attached at all. Cloud
-images also typically redirect their console to a serial port rather
-than the VGA/EFI framebuffer this provider's noVNC-style console shows,
-so a black screen past the firmware boot stage is expected and not
-itself informative either way. Confirming full cloud-init completion
-needs either a configured bridge (for network-based confirmation, e.g.
-SSH) or wiring up bhyve's serial console (neither of which are CAPI-
-provider-specific work) - tracked as real follow-on verification, not
-attempted in this pass to avoid further live changes to shared
-infrastructure.
+### Follow-up: real networking confirmed; NoCloud/cloud-init still an open question
+
+The gap named above (no flat bridge configured) has since been closed:
+`apiarium`'s `re0` was migrated onto a real bridge (`bridge12`,
+inheriting `re0`'s own MAC so the LAN's existing DHCP reservation for
+the host kept working), and `-bhyve-bridge bridge12` is now a live
+`managerd` flag there. Re-running the same test (this time letting the
+VM use the flat-bridge path, no `network_id`) confirmed **real,
+working networking end-to-end**: the guest broadcast a genuine DHCPv4
+request, got a real lease from the LAN's own router
+(`10.50.0.104`), and was pingable from an entirely separate machine
+across the bridge. This is the core thing this pass set out to prove,
+and it's now solid.
+
+**Not yet confirmed**: whether cloud-init actually consumed the
+NoCloud seed data. The booted VM's console showed the stock image's
+default hostname (`ubuntu`, not the seed's `capi-test-cp`), and SSH
+(keyed only by the seed's `ssh_authorized_keys`, nothing else could
+have added it) was never reachable - `Connection refused`, meaning
+nothing was listening on port 22 at all, not a key mismatch. A forced
+guest reset (`bhyvectl --force-reset`, to rule out a first-boot
+device-enumeration race) reproduced the same result on a second boot.
+The seed ISO is confirmed genuinely attached (`procstat -f` on the
+`bhyve` process shows the seed file open as a real block device), so
+this isn't a missing-attachment problem - it's either a NoCloud
+datasource-detection issue specific to bhyve's `ahci-cd` presentation,
+or something else preventing `sshd` from ever starting. Diagnosing it
+further needs either in-guest access (not available - no known
+credentials without the seed data having worked) or a captured serial
+console log, since cloud-init's own boot-time messages aren't visible
+on the VGA/EFI framebuffer this provider's console shows (matches the
+now-resolved suspicion that these images redirect console output
+away from that framebuffer). Wiring up bhyve's serial console (an
+Apiary-side change, not specific to this provider) is the concrete
+next step for root-causing this - tracked as real, disclosed follow-on
+work, not attempted in this pass.
