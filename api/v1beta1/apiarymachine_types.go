@@ -46,6 +46,20 @@ type ApiaryMachineSpec struct {
 	// NetworkID by the controller, but overridable per-machine.
 	// +optional
 	NetworkID string `json:"networkID,omitempty"`
+
+	// StaticIPAddress overrides the address this ApiaryMachine reports
+	// ready at, for a VM that isn't on an Apiary-managed
+	// NetworkDefinition (NetworkID unset) - a flat-bridge VM gets its
+	// IP from a real, external DHCP server, which Apiary's own
+	// VMDefinition.ip_address never tracks, so the controller would
+	// otherwise wait for an IP that will never appear in Apiary's own
+	// API. Set this when the operator has externally guaranteed the
+	// address (e.g. a static DHCP reservation on their own router, keyed
+	// by this VM's own deterministic MAC - see the apiary repo's
+	// ADR-0044) - the controller trusts it as-is, with no way to verify
+	// the VM actually received it.
+	// +optional
+	StaticIPAddress string `json:"staticIPAddress,omitempty"`
 }
 
 // ApiaryMachineStatus defines the observed state of an ApiaryMachine.

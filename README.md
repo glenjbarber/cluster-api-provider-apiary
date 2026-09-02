@@ -51,13 +51,25 @@ consistent with the first.
 - **No load balancer / HA control plane.** `ApiaryCluster`'s
   `controlPlaneEndpoint` is caller-supplied, not provisioned. For a
   single control-plane node, that's the node's own VM IP - which you
-  need to know (or reserve) *before* `KubeadmControlPlane` will
-  generate that node's bootstrap data at all, since CAPI's own contract
-  requires `Cluster.spec.controlPlaneEndpoint` set first. If your
-  network doesn't give you a predictable address ahead of time, create
-  the control-plane `ApiaryMachine` by hand, read its
-  `status.addresses` once ready, then patch `Cluster`/`ApiaryCluster`
-  and apply the rest. See `examples/cluster.yaml`.
+  need to know (or reserve) *before* `KubeadmControlPlane` (or a plain
+  `KubeadmConfig`, for a manually-managed control-plane `Machine` like
+  this repo's own real verification used) will generate that node's
+  bootstrap data at all, since CAPI's own contract requires
+  `Cluster.spec.controlPlaneEndpoint` set first. **Live-verified real
+  solution**, if your network doesn't hand out predictable addresses:
+  `ApiaryMachineSpec.StaticIPAddress` plus a static DHCP reservation
+  keyed by the VM's own deterministic MAC. The VM id this provider will
+  create is itself deterministic - a SHA-256 hash of the owning
+  `ApiaryMachine`'s own `namespace/name` (`apiaryMachineVMID`, prefixed
+  `capi-`) - so you can compute both the future VM id *and* its MAC
+  (apiary's own `deriveMAC`, see its ADR-0044) before creating anything
+  at all, reserve a real static lease for that MAC on your own router
+  ahead of time, and set `controlPlaneEndpoint`/`StaticIPAddress` to
+  that pre-reserved address from the very first `kubectl apply` -
+  closing the chicken-and-egg gap entirely, no "create by hand, patch
+  afterward" dance needed. (`status.addresses`/patch-afterward, as this
+  section used to suggest, remains a fallback for a network that gives
+  you no way to reserve an address at all.)
 - **No automatic `providerID` → kubelet wiring.** This provider sets
   `ApiaryMachine.spec.providerID` to `apiary://<vm-id>` as soon as the
   VM is created, but nothing in Apiary or this provider can reach into

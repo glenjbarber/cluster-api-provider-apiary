@@ -220,12 +220,22 @@ func (r *ApiaryMachineReconciler) pollVM(ctx context.Context, apiaryMachine *inf
 		return ctrl.Result{}, fmt.Errorf("getting apiary vm %s: %w", apiaryMachine.Status.VMID, err)
 	}
 
-	if vm.IPAddress == "" {
+	ip := vm.IPAddress
+	if apiaryMachine.Spec.StaticIPAddress != "" {
+		// A flat-bridge VM (NetworkID unset) never gets an
+		// Apiary-tracked IP at all - it's assigned by a real, external
+		// DHCP server Apiary has no visibility into. StaticIPAddress
+		// lets an operator who has externally guaranteed the address
+		// (e.g. a router-side static reservation keyed by this VM's
+		// own deterministic MAC) unblock readiness anyway.
+		ip = apiaryMachine.Spec.StaticIPAddress
+	}
+	if ip == "" {
 		return ctrl.Result{RequeueAfter: notReadyRequeueInterval}, nil
 	}
 
 	apiaryMachine.Status.Addresses = []clusterv1.MachineAddress{
-		{Type: clusterv1.MachineInternalIP, Address: vm.IPAddress},
+		{Type: clusterv1.MachineInternalIP, Address: ip},
 	}
 	apiaryMachine.Status.Ready = true
 	if err := r.Status().Update(ctx, apiaryMachine); err != nil {
