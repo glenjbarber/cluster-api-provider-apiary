@@ -69,7 +69,16 @@ spec:
     # for why this manual step exists at all (no cloud-controller-
     # manager sets it automatically).
     preKubeadmCommands:
-      - cloud-init status --wait
+      # Deliberately no "cloud-init status --wait" here: this command
+      # blocks until cloud-init itself reaches "done" - but a
+      # preKubeadmCommand runs *from inside* cloud-init's own final
+      # stage, which can't reach "done" while blocked running this very
+      # command. Confirmed live: including it deadlocks the guest
+      # forever, with the console frozen mid-boot and no further
+      # output. No wait is needed anyway - runcmd entries (which is
+      # what preKubeadmCommands become) already execute strictly in
+      # order within the same cloud-init stage.
+      - apt-get install -y jq
       - |
         VM_ID=$(jq -r '.ds.meta_data."instance-id"' /run/cloud-init/instance-data.json)
         echo "KUBELET_EXTRA_ARGS=--provider-id=apiary://${VM_ID}" > /etc/default/kubelet
@@ -123,7 +132,10 @@ spec:
   template:
     spec:
       preKubeadmCommands:
-        - cloud-init status --wait
+        # See the control-plane KubeadmConfigTemplate's own comment
+        # above on why "cloud-init status --wait" is deliberately
+        # absent here - it deadlocks a preKubeadmCommand.
+        - apt-get install -y jq
         - |
           VM_ID=$(jq -r '.ds.meta_data."instance-id"' /run/cloud-init/instance-data.json)
           echo "KUBELET_EXTRA_ARGS=--provider-id=apiary://${VM_ID}" > /etc/default/kubelet
