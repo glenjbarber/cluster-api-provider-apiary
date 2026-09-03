@@ -138,12 +138,26 @@ func (c *Client) GetVM(ctx context.Context, id string) (*VM, error) {
 }
 
 // DeleteVM is idempotent from the controller's perspective - a VM
-// already gone (ErrNotFound) is treated as success, matching how a
-// finalizer's teardown step should behave on a retry after a partial
-// prior success.
+// already gone is treated as success, matching how a finalizer's
+// teardown step should behave on a retry after a partial prior
+// success (or after some other path, e.g. an operator using Apiary's
+// own REST API directly, already deleted it).
+//
+// Two distinct "already gone" shapes are handled. ErrNotFound covers
+// a literal HTTP 404, but restshimd's DELETE /v1/vms/{id} route never
+// actually returns one - a delete against an unknown id fails at
+// Apiary's raft FSM layer ("DeleteVM: id %q does not exist", see the
+// apiary repo's internal/raft/fsm.go) and ADR-0011's own error
+// mapping (internal/restshim/server.go's writeError) surfaces any
+// such application-level rejection as a plain 400 with that string as
+// its body, not a 404. That's matched defensively by substring here,
+// the same posture createVM above already applies to "already
+// exists" - restshim's errors are plain strings, not typed codes, so
+// this is the only way to distinguish "already deleted" from a real
+// failure.
 func (c *Client) DeleteVM(ctx context.Context, id string) error {
 	err := c.do(ctx, http.MethodDelete, "/v1/vms/"+id, nil, nil)
-	if errors.Is(err, ErrNotFound) {
+	if err == nil || errors.Is(err, ErrNotFound) || strings.Contains(err.Error(), "does not exist") {
 		return nil
 	}
 	return err

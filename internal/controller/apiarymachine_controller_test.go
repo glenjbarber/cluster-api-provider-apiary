@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 
@@ -108,6 +110,18 @@ func (f *fakeApiaryServer) handler() http.HandlerFunc {
 
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/vms/"):
 			id := strings.TrimPrefix(r.URL.Path, "/v1/vms/")
+			if _, ok := f.vms[id]; !ok {
+				// Mirrors restshimd's real behavior for a delete against
+				// an unknown id: the rejection comes back from Apiary's
+				// raft FSM as a plain "does not exist" string, mapped by
+				// ADR-0011's error mapping to a 400 - never a 404 (see
+				// apiary's internal/restshim/server.go, handleDeleteVM/
+				// writeError). This is the exact shape the reconciler's
+				// delete path must treat as already-gone/idempotent.
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("DeleteVM: id %q does not exist", id)})
+				return
+			}
 			delete(f.vms, id)
 			f.deletedVMs = append(f.deletedVMs, id)
 			json.NewEncoder(w).Encode(apiaryclient.VM{ID: id})
@@ -456,5 +470,110 @@ func TestApiaryMachineReconciler_Delete_TearsDownVMAndRemovesFinalizer(t *testin
 	err := c.Get(t.Context(), key, remaining)
 	if err == nil {
 		t.Errorf("ApiaryMachine still exists after its last finalizer was removed: %+v", remaining)
+	}
+}
+
+// TestApiaryMachineReconciler_Delete_AlreadyDeletedVMIsIdempotent covers
+// a real bug found live: an operator deleted the backing VM directly
+// through Apiary's own REST API, outside this controller entirely.
+// Every subsequent reconcile then called DeleteVM against an id that
+// no longer existed, got restshimd's real "does not exist" response
+// back (a 400, not a 404 - see apiaryclient.Client.DeleteVM's own doc
+// comment), and treated it as a hard error - looping forever without
+// ever removing its finalizer, permanently stuck deleting the
+// ApiaryMachine/Machine object until an operator stripped the
+// finalizer by hand with kubectl. DeleteVM must treat an
+// already-gone VM as success so cleanup can actually complete.
+func TestApiaryMachineReconciler_Delete_AlreadyDeletedVMIsIdempotent(t *testing.T) {
+	apiaryMachine := &infrav1.ApiaryMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-machine",
+			Finalizers: []string{ApiaryMachineFinalizer},
+		},
+		Spec:   infrav1.ApiaryMachineSpec{NodeID: "node-a"},
+		Status: infrav1.ApiaryMachineStatus{VMID: "capi-alreadygone"},
+	}
+	c := setupMachineFixtures(t, apiaryMachine)
+
+	server := newFakeApiaryServer()
+	// Deliberately not added to server.vms - simulates the VM already
+	// having been deleted through some other path before this
+	// reconcile ever runs.
+	ts := httptest.NewServer(server.handler())
+	defer ts.Close()
+
+	key := types.NamespacedName{Namespace: "default", Name: "test-machine"}
+	toDelete := &infrav1.ApiaryMachine{}
+	if err := c.Get(t.Context(), key, toDelete); err != nil {
+		t.Fatalf("Get() error: %v", err)
+	}
+	if err := c.Delete(t.Context(), toDelete); err != nil {
+		t.Fatalf("Delete() error: %v", err)
+	}
+
+	r := &ApiaryMachineReconciler{
+		Client: c,
+		NewApiaryClient: func(nodeID string) (*apiaryclient.Client, error) {
+			return apiaryclient.NewClient(ts.URL, "", nil), nil
+		},
+	}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatalf("Reconcile() error: %v, want nil - an already-gone VM must be treated as a successful delete", err)
+	}
+
+	remaining := &infrav1.ApiaryMachine{}
+	err := c.Get(t.Context(), key, remaining)
+	if err == nil {
+		t.Errorf("ApiaryMachine still exists after Reconcile - finalizer was not removed for an already-deleted VM: %+v", remaining)
+	}
+}
+
+// TestApiaryMachineReconciler_Delete_GenuineErrorIsNotSwallowed confirms
+// the idempotent-delete fix above doesn't overreach: a real failure to
+// even reach restshimd (e.g. connection refused) must still surface
+// as a reconcile error, not be silently treated as success - only an
+// actual not-found/does-not-exist response is safe to swallow.
+func TestApiaryMachineReconciler_Delete_GenuineErrorIsNotSwallowed(t *testing.T) {
+	apiaryMachine := &infrav1.ApiaryMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-machine",
+			Finalizers: []string{ApiaryMachineFinalizer},
+		},
+		Spec:   infrav1.ApiaryMachineSpec{NodeID: "node-a"},
+		Status: infrav1.ApiaryMachineStatus{VMID: "capi-existingvm"},
+	}
+	c := setupMachineFixtures(t, apiaryMachine)
+
+	// A real listener, closed before any request is made against it -
+	// every call fails with connection refused, a genuine transport
+	// failure distinct from any application-level response.
+	ts := httptest.NewServer(newFakeApiaryServer().handler())
+	ts.Close()
+
+	key := types.NamespacedName{Namespace: "default", Name: "test-machine"}
+	toDelete := &infrav1.ApiaryMachine{}
+	if err := c.Get(t.Context(), key, toDelete); err != nil {
+		t.Fatalf("Get() error: %v", err)
+	}
+	if err := c.Delete(t.Context(), toDelete); err != nil {
+		t.Fatalf("Delete() error: %v", err)
+	}
+
+	r := &ApiaryMachineReconciler{
+		Client: c,
+		NewApiaryClient: func(nodeID string) (*apiaryclient.Client, error) {
+			return apiaryclient.NewClient(ts.URL, "", nil), nil
+		},
+	}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err == nil {
+		t.Fatal("Reconcile() error = nil, want a real error for a genuine connection failure")
+	}
+
+	remaining := &infrav1.ApiaryMachine{}
+	if err := c.Get(t.Context(), key, remaining); err != nil {
+		t.Fatalf("ApiaryMachine unexpectedly removed after a genuine DeleteVM failure: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(remaining, ApiaryMachineFinalizer) {
+		t.Error("finalizer was removed despite a genuine DeleteVM failure - cleanup was never actually verified")
 	}
 }
