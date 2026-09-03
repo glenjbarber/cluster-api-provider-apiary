@@ -366,6 +366,50 @@ func TestApiaryMachineReconciler_PollVM_NotReadyWithoutIPYet(t *testing.T) {
 	}
 }
 
+// TestApiaryMachineReconciler_PollVM_StaticIPAddressUnblocksReadiness
+// covers a flat-bridge VM (no NetworkID) - Apiary's own VMDefinition
+// never gets an IPAddress in that mode (it's assigned by a real,
+// external DHCP server Apiary has no visibility into), so without
+// Spec.StaticIPAddress this would wait forever. Confirms the override
+// is used as-is for both Ready and the reported Addresses.
+func TestApiaryMachineReconciler_PollVM_StaticIPAddressUnblocksReadiness(t *testing.T) {
+	apiaryMachine := &infrav1.ApiaryMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-machine"},
+		Spec:       infrav1.ApiaryMachineSpec{NodeID: "node-a", StaticIPAddress: "10.50.0.50"},
+		Status:     infrav1.ApiaryMachineStatus{VMID: "capi-existingvm"},
+	}
+	c := setupMachineFixtures(t, apiaryMachine)
+
+	server := newFakeApiaryServer()
+	// Deliberately no ipOnGet set - the VM's own Apiary-tracked
+	// IPAddress stays empty, exactly like a real flat-bridge VM.
+	server.vms["capi-existingvm"] = apiaryclient.VM{ID: "capi-existingvm", NodeID: "node-a"}
+	ts := httptest.NewServer(server.handler())
+	defer ts.Close()
+
+	r := &ApiaryMachineReconciler{
+		Client: c,
+		NewApiaryClient: func(nodeID string) (*apiaryclient.Client, error) {
+			return apiaryclient.NewClient(ts.URL, "", nil), nil
+		},
+	}
+
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "test-machine"}}); err != nil {
+		t.Fatalf("Reconcile() error: %v", err)
+	}
+
+	updated := &infrav1.ApiaryMachine{}
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: "default", Name: "test-machine"}, updated); err != nil {
+		t.Fatalf("Get() error: %v", err)
+	}
+	if !updated.Status.Ready {
+		t.Fatal("Status.Ready = false, want true - StaticIPAddress should unblock readiness with no Apiary-tracked IP at all")
+	}
+	if len(updated.Status.Addresses) != 1 || updated.Status.Addresses[0].Address != "10.50.0.50" {
+		t.Errorf("Status.Addresses = %+v, want one InternalIP 10.50.0.50 (the static override, not vm.IPAddress)", updated.Status.Addresses)
+	}
+}
+
 func TestApiaryMachineReconciler_Delete_TearsDownVMAndRemovesFinalizer(t *testing.T) {
 	apiaryMachine := &infrav1.ApiaryMachine{
 		ObjectMeta: metav1.ObjectMeta{
