@@ -27,12 +27,22 @@ spec:
           args:
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8443
-            # Populate with this deployment's real Apiary node/endpoint
-            # mapping - see this repo's README. Left empty here so the
-            # manifest is safe to apply as-is (every ApiaryMachine
+          env:
+            # Sourced from a Secret rather than a CLI flag/arg, since the
+            # node map's value half carries each Apiary node's real API
+            # key (see internal/apiaryclient) - a plain -apiary-node-map
+            # arg would put that key in the Pod's own spec, readable by
+            # anyone with "kubectl get pod -o yaml" access. See this
+            # repo's README for how to create the Secret; the manifest
+            # is safe to apply as-is without it - every ApiaryMachine
             # reconcile will simply fail fast with a clear "no
-            # -apiary-node-map entry" error until this is set).
-            - --apiary-node-map=
+            # -apiary-node-map entry" error until it exists.
+            - name: APIARY_NODE_MAP
+              valueFrom:
+                secretKeyRef:
+                  name: apiary-credentials
+                  key: node-map
+                  optional: true
           livenessProbe:
             httpGet:
               path: /healthz

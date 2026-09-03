@@ -75,13 +75,19 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.StringVar(&nodeMapSpec, "apiary-node-map", "",
 		`Apiary node_id to restshimd endpoint mapping, e.g. "apiarium=http://10.50.0.14:8080|APIKEY;freebsd-apiary=http://10.50.0.11:8080". `+
-			`The API key half (after |) is optional, matching restshimd's own "no key configured means unauthenticated" behavior.`)
+			`The API key half (after |) is optional, matching restshimd's own "no key configured means unauthenticated" behavior. `+
+			`Falls back to the APIARY_NODE_MAP environment variable if unset - prefer that in-cluster (sourced from a Secret via `+
+			`env.valueFrom.secretKeyRef, see config/manager/manager.yaml) so the API key half never appears in a Pod's own spec/args, `+
+			`visible to anyone with "kubectl get pod -o yaml" access.`)
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	if nodeMapSpec == "" {
+		nodeMapSpec = os.Getenv("APIARY_NODE_MAP")
+	}
 	nodeMap, err := parseNodeMap(nodeMapSpec)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

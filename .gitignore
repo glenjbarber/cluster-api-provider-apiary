@@ -20,6 +20,12 @@ profile.cov
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
+# make build's binary output, and make build-installer's rendered
+# infrastructure-components.yaml bundle - both real build artifacts,
+# neither meant to be committed.
+/bin/
+/out/
+
 # Go workspace file
 go.work
 go.work.sum

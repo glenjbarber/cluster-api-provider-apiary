@@ -84,20 +84,67 @@ consistent with the first.
 
 ## Configuration
 
-The controller manager takes one provider-specific flag,
-`-apiary-node-map`, mapping each Apiary `node_id` an `ApiaryMachine`
-might reference to that node's `restshimd` endpoint and (optional) API
-key:
+The controller manager takes one provider-specific setting, mapping
+each Apiary `node_id` an `ApiaryMachine` might reference to that node's
+`restshimd` endpoint and (optional) API key:
 
 ```
--apiary-node-map="apiarium=http://10.50.0.14:8080|APIKEY;freebsd-apiary=http://10.50.0.11:8080"
+apiarium=http://10.50.0.14:8080|APIKEY;freebsd-apiary=http://10.50.0.11:8080
 ```
 
 This mirrors apiary's own `cmd/frontend -role-map` flag: an explicit,
 operator-maintained mapping rather than any kind of service discovery,
 since Apiary itself has none either.
 
-## Building and deploying
+Two ways to supply it:
+
+- **`-apiary-node-map` flag** - fine for local, out-of-cluster runs
+  (`go run ./cmd -apiary-node-map=...`), but never use this in a real
+  Deployment: flag values live in the Pod's own spec, readable by
+  anyone with `kubectl get pod -o yaml` access - and the value half of
+  this particular flag carries real API keys.
+- **`APIARY_NODE_MAP` environment variable** - checked whenever the
+  flag is empty. `config/manager/manager.yaml` wires this to a Secret
+  (`apiary-credentials`, key `node-map`) via `env.valueFrom.secretKeyRef`,
+  so the real value never appears in the Deployment manifest itself.
+  Create it once per cluster before installing this provider:
+
+  ```bash
+  kubectl create namespace cluster-api-provider-apiary-system
+  kubectl create secret generic apiary-credentials \
+    --namespace cluster-api-provider-apiary-system \
+    --from-literal=node-map='apiarium=http://10.50.0.14:8080|APIKEY;freebsd-apiary=http://10.50.0.11:8080'
+  ```
+
+  The Secret reference is marked `optional: true`, so the manifest
+  still applies cleanly without it - every `ApiaryMachine` reconcile
+  then just fails fast with a clear "no `-apiary-node-map` entry" error
+  until the Secret exists, rather than the Pod refusing to start.
+
+## Installing via clusterctl
+
+Released versions publish a `ghcr.io/glenjbarber/cluster-api-provider-apiary`
+image plus GitHub Release assets (`infrastructure-components.yaml`,
+`metadata.yaml`) that `clusterctl` itself expects. Add this repository
+as a custom provider in `~/.cluster-api/clusterctl.yaml`:
+
+```yaml
+providers:
+  - name: apiary
+    url: https://github.com/glenjbarber/cluster-api-provider-apiary/releases/latest/infrastructure-components.yaml
+    type: InfrastructureProvider
+```
+
+then, after creating the `apiary-credentials` Secret above (clusterctl
+installs the namespace itself, so create the Secret only after `init`,
+or `kubectl create namespace` first as shown above and create it
+before):
+
+```bash
+clusterctl init --infrastructure apiary
+```
+
+## Building and deploying (development)
 
 ```bash
 go build -o bin/manager ./cmd
@@ -106,9 +153,13 @@ go build -o bin/manager ./cmd
 CRDs and RBAC are hand-generated via `controller-gen` (no `kubebuilder`
 CLI dependency) into `config/crd/bases` and `config/rbac`; `config/default`
 kustomizes the whole deployment (namespace, CRDs, RBAC, manager
-Deployment) together:
+Deployment) together. For a quick local-cluster test with an
+already-built image (skips clusterctl/GHCR entirely):
 
 ```bash
+make docker-build IMG=apiary-capi-manager:dev
+kind load docker-image apiary-capi-manager:dev --name <your kind cluster>
+cd config/manager && go run sigs.k8s.io/kustomize/kustomize/v5@v5.8.1 edit set image controller=apiary-capi-manager:dev
 kubectl apply -k config/default
 ```
 
@@ -119,6 +170,19 @@ go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5 object:headerFile
 go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5 crd paths="./api/..." output:crd:artifacts:config=config/crd/bases
 go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5 rbac:roleName=manager-role paths="./internal/controller/..." output:rbac:artifacts:config=config/rbac
 ```
+
+## Releasing
+
+Pushing a tag matching `v*.*.*` (e.g. `v0.1.0`) triggers
+`.github/workflows/release.yml`, which builds/tests the tagged commit,
+builds and pushes a multi-arch (`linux/amd64`/`linux/arm64`) image to
+GHCR tagged with both the version and `latest`, renders
+`infrastructure-components.yaml` via `make build-installer`, and
+publishes a GitHub Release carrying that file plus `metadata.yaml` -
+the two assets clusterctl's own provider-repository convention expects.
+`metadata.yaml`'s `releaseSeries` must be kept in sync with the
+contract version (`v1beta1`, matching the Cluster API version this
+provider was built against) whenever that changes.
 
 ## Testing
 
