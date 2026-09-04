@@ -79,6 +79,24 @@ spec:
       # what preKubeadmCommands become) already execute strictly in
       # order within the same cloud-init stage.
       - apt-get install -y jq
+      # ubuntu-k8s-1.31.raw (ADR-0045) ships kubeadm/kubelet/containerd
+      # but does not persist the standard kubeadm node prerequisites -
+      # ip_forward and the br_netfilter/overlay kernel modules - across
+      # a fresh boot. Without these, "kubeadm init" fails preflight
+      # outright: "[ERROR FileContent--proc-sys-net-ipv4-ip_forward]:
+      # /proc/sys/net/ipv4/ip_forward contents are not set to 1" -
+      # caught live the first time a real KubeadmControlPlane-driven
+      # boot got past the earlier DNS bug (ADR-0050) and actually
+      # reached kubeadm's own preflight checks. Setting these here
+      # (rather than baking them into the image) means a rebuild isn't
+      # needed to fix it.
+      - sysctl -w net.ipv4.ip_forward=1
+      - |
+        printf 'net.ipv4.ip_forward = 1\nnet.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\n' > /etc/sysctl.d/99-kubernetes-cri.conf
+      - modprobe br_netfilter overlay
+      - |
+        printf 'overlay\nbr_netfilter\n' > /etc/modules-load.d/k8s.conf
+      - sysctl --system
       - |
         VM_ID=$(jq -r '.ds.meta_data."instance-id"' /run/cloud-init/instance-data.json)
         echo "KUBELET_EXTRA_ARGS=--provider-id=apiary://${VM_ID}" > /etc/default/kubelet
@@ -136,6 +154,16 @@ spec:
         # above on why "cloud-init status --wait" is deliberately
         # absent here - it deadlocks a preKubeadmCommand.
         - apt-get install -y jq
+        # See the control-plane KubeadmConfigSpec's own comment above on
+        # ip_forward/br_netfilter - the same missing image prerequisite
+        # applies to a worker's "kubeadm join" preflight too.
+        - sysctl -w net.ipv4.ip_forward=1
+        - |
+          printf 'net.ipv4.ip_forward = 1\nnet.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\n' > /etc/sysctl.d/99-kubernetes-cri.conf
+        - modprobe br_netfilter overlay
+        - |
+          printf 'overlay\nbr_netfilter\n' > /etc/modules-load.d/k8s.conf
+        - sysctl --system
         - |
           VM_ID=$(jq -r '.ds.meta_data."instance-id"' /run/cloud-init/instance-data.json)
           echo "KUBELET_EXTRA_ARGS=--provider-id=apiary://${VM_ID}" > /etc/default/kubelet
