@@ -85,12 +85,10 @@ consistent with the first.
 - **Base image is a hard prerequisite.** `spec.baseImageName` must name
   a raw (not qcow2), already-bootable disk image with cloud-init
   pre-installed, uploaded to the target Apiary node ahead of time via
-  `UploadISO`. Apiary does zero format conversion (see apiary's
-  ADR-0031/CLAUDE.md) - a plain `qemu-img convert -O raw` of an
+  `UploadISO`. Apiary does zero format conversion - a plain `qemu-img convert -O raw` of an
   official Ubuntu/Debian cloud image is the expected starting point.
 - **`nodeID` (and `networkID`, per-machine) are caller-set, never
-  scheduled** - matching Apiary's own philosophy throughout its API
-  (see apiary's CLAUDE.md): nothing decides which Apiary cluster node
+  scheduled** - matching Apiary's explicit-placement API: nothing decides which Apiary cluster node
   or network a `Machine` should land on beyond what you put in its
   `ApiaryMachineTemplate`.
 
