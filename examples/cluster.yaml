@@ -3,15 +3,16 @@
 # "Known limitations" section: no load balancer / HA control plane).
 #
 # Apiary has no load balancer of its own, so ControlPlaneEndpoint below
-# is the target Apiary node's IP for the control-plane VM you're about
-# to create - you must know it (or reserve it) ahead of time, since
-# KubeadmControlPlane needs Cluster.spec.controlPlaneEndpoint set
-# before it will generate the first control-plane machine's bootstrap
-# data. If your ApiaryCluster's NetworkID doesn't use static/predictable
-# addressing, create the control-plane ApiaryMachine by hand first,
-# read its Status.Addresses once ready, then patch this Cluster's
-# controlPlaneEndpoint and apply the rest - a real, named limitation of
-# not having a provider-managed load balancer.
+# is the control-plane VM's address - you must know or reserve it
+# ahead of time, since kubeadm bootstrap requires the control-plane
+# endpoint before the first Machine is created. For networks without
+# predictable addressing, prefer a static DHCP reservation for the VM's
+# deterministic MAC, and set ApiaryMachine.spec.staticIPAddress to that
+# reserved address (see README.md for deriving the VM ID and MAC).
+# If a reservation is impossible, manually create the control-plane
+# ApiaryMachine, inspect Status.Addresses, then patch this endpoint
+# before applying the remaining resources. Apiary does not provision
+# a control-plane load balancer.
 apiVersion: cluster.x-k8s.io/v1beta1
 kind: Cluster
 metadata:
