@@ -76,6 +76,11 @@ func (r *ApiaryMachineReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	// Clean up even if the owning Machine was already removed.
+	if !apiaryMachine.ObjectMeta.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, apiaryMachine)
+	}
+
 	machine, err := util.GetOwnerMachine(ctx, r.Client, apiaryMachine.ObjectMeta)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -96,10 +101,6 @@ func (r *ApiaryMachineReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err := r.Get(ctx, key, apiaryCluster); err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
-	}
-
-	if !apiaryMachine.ObjectMeta.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, apiaryMachine)
 	}
 
 	return r.reconcileNormal(ctx, apiaryMachine, machine, apiaryCluster)
