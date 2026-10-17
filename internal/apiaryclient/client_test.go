@@ -15,7 +15,7 @@ func TestDeleteVMOnlyIgnoresExactMissingID(t *testing.T) {
   {"missing id",400,fmt.Sprintf("DeleteVM: id %q does not exist",id),false},
   {"not found",404,"",false},
   {"unrelated missing resource",400,"network does not exist",true},
-  {"wrong vm",400,"DeleteVM: id \\"other\\" does not exist",true},
+  {"wrong vm",400,fmt.Sprintf("DeleteVM: id %q does not exist", "other"),true},
   {"server failure",503,fmt.Sprintf("DeleteVM: id %q does not exist",id),true},
   {"other bad request",400,"invalid request",true},
  }
