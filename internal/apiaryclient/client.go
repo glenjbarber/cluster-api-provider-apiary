@@ -92,7 +92,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		if apiErr.Error == "" {
 			return fmt.Errorf("apiaryclient: %s %s: unexpected status %d", method, path, resp.StatusCode)
 		}
-		return apiErr.asError()
+		return fmt.Errorf("apiaryclient: HTTP %d: %w", resp.StatusCode, apiErr.asError())
 	}
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
@@ -157,7 +157,7 @@ func (c *Client) GetVM(ctx context.Context, id string) (*VM, error) {
 // failure.
 func (c *Client) DeleteVM(ctx context.Context, id string) error {
 	err := c.do(ctx, http.MethodDelete, "/v1/vms/"+id, nil, nil)
-	if err == nil || errors.Is(err, ErrNotFound) || strings.Contains(err.Error(), "does not exist") {
+	if err == nil || errors.Is(err, ErrNotFound) || err.Error() == fmt.Sprintf("apiaryclient: HTTP 400: DeleteVM: id %q does not exist", id) {
 		return nil
 	}
 	return err
