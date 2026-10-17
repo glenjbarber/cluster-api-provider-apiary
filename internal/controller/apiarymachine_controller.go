@@ -181,7 +181,7 @@ func (r *ApiaryMachineReconciler) createVM(ctx context.Context, apiaryMachine *i
 	})
 	if err != nil && strings.Contains(err.Error(), "already exists") {
 		// vmID is a deterministic function of this ApiaryMachine's own
-		// namespace/name (see apiaryMachineVMID), so "already exists"
+		// namespace/name/UID (see apiaryMachineVMID), so "already exists"
 		// here can only mean a previous reconcile already created this
 		// exact VM - most likely this Reconcile call started from a
 		// stale read of Status.VMID (the controller-runtime cache
@@ -269,7 +269,14 @@ func (r *ApiaryMachineReconciler) reconcileDelete(ctx context.Context, apiaryMac
 // (before Status.VMID was persisted) can recompute the same id on
 // retry instead of creating a second, orphaned VM.
 func apiaryMachineVMID(apiaryMachine *infrav1.ApiaryMachine) string {
-	sum := sha256.Sum256([]byte(apiaryMachine.Namespace + "/" + apiaryMachine.Name))
+	// Scope the VM to the Kubernetes object incarnation, not just its name.
+	// The UID is stable across retries but changes after delete/recreate.
+	// Retain the legacy derivation for fixtures without a UID.
+	identity := apiaryMachine.Namespace + "/" + apiaryMachine.Name
+	if apiaryMachine.UID != "" {
+		identity += "/" + string(apiaryMachine.UID)
+	}
+	sum := sha256.Sum256([]byte(identity))
 	return "capi-" + hex.EncodeToString(sum[:])[:12]
 }
 
