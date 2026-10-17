@@ -183,6 +183,15 @@ func setupMachineFixtures(t *testing.T, apiaryMachine *infrav1.ApiaryMachine) cl
 		Build()
 }
 
+func TestApiaryMachineVMID_DistinguishesRecreatedObjects(t *testing.T) {
+	first := &infrav1.ApiaryMachine{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "worker", UID: "uid-one"}}
+	retry := first.DeepCopy()
+	recreated := first.DeepCopy()
+	recreated.UID = "uid-two"
+	if apiaryMachineVMID(first) != apiaryMachineVMID(retry) { t.Fatal("retry changed VM ID") }
+	if apiaryMachineVMID(first) == apiaryMachineVMID(recreated) { t.Fatal("recreated resource reused prior VM ID") }
+}
+
 func TestApiaryMachineReconciler_CreateVM_UploadsSeedISOAndCreatesVM(t *testing.T) {
 	apiaryMachine := &infrav1.ApiaryMachine{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-machine"},
