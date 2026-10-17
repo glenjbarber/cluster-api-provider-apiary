@@ -424,6 +424,37 @@ func TestApiaryMachineReconciler_PollVM_StaticIPAddressUnblocksReadiness(t *test
 	}
 }
 
+// A missing owning Machine must not block finalizer cleanup.
+func TestApiaryMachineReconciler_Delete_MissingOwnerStillCleansUp(t *testing.T) {
+	apiaryMachine := &infrav1.ApiaryMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-machine", Finalizers: []string{ApiaryMachineFinalizer}},
+		Spec: infrav1.ApiaryMachineSpec{NodeID: "node-a"},
+		Status: infrav1.ApiaryMachineStatus{VMID: "capi-existingvm"},
+	}
+	c := setupMachineFixtures(t, apiaryMachine)
+	key := types.NamespacedName{Namespace: "default", Name: "test-machine"}
+	owner := &clusterv1.Machine{}
+	if err := c.Get(t.Context(), key, owner); err != nil { t.Fatal(err) }
+	if err := c.Delete(t.Context(), owner); err != nil { t.Fatal(err) }
+	server := newFakeApiaryServer()
+	server.vms["capi-existingvm"] = apiaryclient.VM{ID: "capi-existingvm", NodeID: "node-a"}
+	ts := httptest.NewServer(server.handler())
+	defer ts.Close()
+	toDelete := &infrav1.ApiaryMachine{}
+	if err := c.Get(t.Context(), key, toDelete); err != nil { t.Fatal(err) }
+	if err := c.Delete(t.Context(), toDelete); err != nil { t.Fatal(err) }
+	r := &ApiaryMachineReconciler{Client: c, NewApiaryClient: func(string) (*apiaryclient.Client, error) {
+		return apiaryclient.NewClient(ts.URL, "", nil), nil
+	}}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil { t.Fatal(err) }
+	server.mu.Lock()
+	deleted := append([]string(nil), server.deletedVMs...)
+	server.mu.Unlock()
+	if len(deleted) != 1 || deleted[0] != "capi-existingvm" { t.Errorf("deleted VMs = %v, want [capi-existingvm]", deleted) }
+	remaining := &infrav1.ApiaryMachine{}
+	if err := c.Get(t.Context(), key, remaining); err == nil { t.Errorf("ApiaryMachine still exists after cleanup: %+v", remaining) }
+}
+
 func TestApiaryMachineReconciler_Delete_TearsDownVMAndRemovesFinalizer(t *testing.T) {
 	apiaryMachine := &infrav1.ApiaryMachine{
 		ObjectMeta: metav1.ObjectMeta{
